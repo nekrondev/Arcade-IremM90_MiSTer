@@ -174,9 +174,22 @@ struct
 wire [7:0] ISPR;
 wire RAMEN = sfr.PRC[6];
 
+// V35 on-chip 256-byte internal RAM, enabled via RAMEN (PRC[6]).
+// Located at the {IDB}Exx page. Used by some games (e.g. Risky Challenge)
+// as fast scratch RAM; must behave as real read/write RAM.
+reg [7:0] internal_ram[256] /* verilator public */;
+
 ISCR_if EXIC0(clk, reset); ISCR sfr_EXIC0(EXIC0);
 ISCR_if EXIC1(clk, reset); ISCR sfr_EXIC1(EXIC1);
 ISCR_if EXIC2(clk, reset); ISCR sfr_EXIC2(EXIC2);
+
+// Timer unit interrupt-control registers (INTTU0/1/2) and timer data registers.
+ISCR_if TMIC0(clk, reset); ISCR sfr_TMIC0(TMIC0);
+ISCR_if TMIC1(clk, reset); ISCR sfr_TMIC1(TMIC1);
+ISCR_if TMIC2(clk, reset); ISCR sfr_TMIC2(TMIC2);
+
+reg [15:0] TM0, MD0, TM1, MD1;
+reg [7:0]  TMC0, TMC1;
 
 reg halt /*verilator public*/; // TODO, do something with this
 
@@ -361,11 +374,30 @@ task write_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e w
         8'h4c: begin EXIC0.cpu_set <= 1; EXIC0.cpu_value <= data[7:0]; end
         8'h4d: begin EXIC1.cpu_set <= 1; EXIC1.cpu_value <= data[7:0]; end
         8'h4e: begin EXIC2.cpu_set <= 1; EXIC2.cpu_value <= data[7:0]; end
+        // Timer data registers (16-bit; also allow high-byte access)
+        8'h80: if (width != BYTE) TM0 <= data; else TM0[7:0] <= data[7:0];
+        8'h81: TM0[15:8] <= data[7:0];
+        8'h82: if (width != BYTE) MD0 <= data; else MD0[7:0] <= data[7:0];
+        8'h83: MD0[15:8] <= data[7:0];
+        8'h88: if (width != BYTE) TM1 <= data; else TM1[7:0] <= data[7:0];
+        8'h89: TM1[15:8] <= data[7:0];
+        8'h8a: if (width != BYTE) MD1 <= data; else MD1[7:0] <= data[7:0];
+        8'h8b: MD1[15:8] <= data[7:0];
+        // Timer control registers
+        8'h90: TMC0 <= data[7:0];
+        8'h91: TMC1 <= data[7:0];
+        // Timer interrupt-control registers
+        8'h9c: begin TMIC0.cpu_set <= 1; TMIC0.cpu_value <= data[7:0]; end
+        8'h9d: begin TMIC1.cpu_set <= 1; TMIC1.cpu_value <= data[7:0]; end
+        8'h9e: begin TMIC2.cpu_set <= 1; TMIC2.cpu_value <= data[7:0]; end
         8'heb: sfr.PRC <= data[7:0];
         8'hff: sfr.IDB <= data[7:0];
         default: begin end
         endcase
     end else if (RAMEN && phys_addr[19:8] == { sfr.IDB, 4'he }) begin
+        internal_ram[phys_addr[7:0]] <= data[7:0];
+        if (width != BYTE)
+            internal_ram[phys_addr[7:0] + 8'd1] <= data[15:8];
     end else begin
         dp_addr <= phys_addr;
         dp_dout <= data;
@@ -390,13 +422,21 @@ task read_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e wi
         8'h4c: internal_din <= { 8'h0, EXIC0.value };
         8'h4d: internal_din <= { 8'h0, EXIC1.value };
         8'h4e: internal_din <= { 8'h0, EXIC2.value };
+        8'h80: internal_din <= TM0;
+        8'h82: internal_din <= MD0;
+        8'h88: internal_din <= TM1;
+        8'h8a: internal_din <= MD1;
+        8'h9c: internal_din <= { 8'h0, TMIC0.value };
+        8'h9d: internal_din <= { 8'h0, TMIC1.value };
+        8'h9e: internal_din <= { 8'h0, TMIC2.value };
         8'heb: internal_din <= { 8'h0, sfr.PRC };
         8'hfc: internal_din <= { 8'h0, ISPR };
         8'hff: internal_din <= { 8'h0, sfr.IDB };
         default: internal_din <= 16'hf00d;
         endcase
     end else if (RAMEN && phys_addr[19:8] == { sfr.IDB, 4'he }) begin
-        internal_din <= 16'hf00d;
+        internal_din <= width == BYTE ? { 8'h0, internal_ram[phys_addr[7:0]] }
+                                      : { internal_ram[phys_addr[7:0] + 8'd1], internal_ram[phys_addr[7:0]] };
     end else begin
         dp_addr <= phys_addr;
         dp_write <= 0;
@@ -887,6 +927,10 @@ always_ff @(posedge clk) begin
         sfr.PRC <= 8'h4e;
         sfr.INTM <= 8'h00;
 
+        TM0 <= 16'd0; MD0 <= 16'd0;
+        TM1 <= 16'd0; MD1 <= 16'd0;
+        TMC0 <= 8'd0; TMC1 <= 8'd0;
+
         state <= IDLE;
         int_processing <= 0;
         use_alu_result <= 0;
@@ -905,6 +949,9 @@ always_ff @(posedge clk) begin
         EXIC0.cpu_set <= 0;
         EXIC1.cpu_set <= 0;
         EXIC2.cpu_set <= 0;
+        TMIC0.cpu_set <= 0;
+        TMIC1.cpu_set <= 0;
+        TMIC2.cpu_set <= 0;
 
         case(state)
             IDLE: if (ce_1) begin
@@ -2017,6 +2064,23 @@ v35_edge_trigger intp2_edge(
     .trigger(EXIC2.ctrl_set_if)
 );
 
+// On-chip timer unit. Counts on the master clock enable and raises the
+// timer interrupt-control registers, which feed the PIC (vectors 28/29/30).
+v35_timer timer(
+    .clk(clk),
+    .ce(ce),
+    .reset(reset),
+
+    .pck_sel(sfr.PRC[1:0]),
+
+    .TM0(TM0), .MD0(MD0), .TM1(TM1), .MD1(MD1),
+    .TMC0(TMC0), .TMC1(TMC1),
+
+    .tu0_set(TMIC0.ctrl_set_if),
+    .tu1_set(TMIC1.ctrl_set_if),
+    .tu2_set(TMIC2.ctrl_set_if)
+);
+
 wire [7:0] pic_intvec;
 wire pic_intreq;
 
@@ -2031,6 +2095,9 @@ v35_pic pic(
     .EXIC0(EXIC0.value),
     .EXIC1(EXIC1.value),
     .EXIC2(EXIC2.value),
+    .TMIC0(TMIC0.value),
+    .TMIC1(TMIC1.value),
+    .TMIC2(TMIC2.value),
 
     .ISPR(ISPR),
 
@@ -2041,6 +2108,9 @@ v35_pic pic(
     .EXIC0_clear(EXIC0.ctrl_clear_if),
     .EXIC1_clear(EXIC1.ctrl_clear_if),
     .EXIC2_clear(EXIC2.ctrl_clear_if),
+    .TMIC0_clear(TMIC0.ctrl_clear_if),
+    .TMIC1_clear(TMIC1.ctrl_clear_if),
+    .TMIC2_clear(TMIC2.ctrl_clear_if),
 
     .int_req(pic_intreq),
     .int_vector(pic_intvec),
