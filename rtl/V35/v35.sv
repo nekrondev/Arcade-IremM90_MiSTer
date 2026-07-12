@@ -177,7 +177,13 @@ wire RAMEN = sfr.PRC[6];
 // V35 on-chip 256-byte internal RAM, enabled via RAMEN (PRC[6]).
 // Located at the {IDB}Exx page. Used by some games (e.g. Risky Challenge)
 // as fast scratch RAM; must behave as real read/write RAM.
-reg [7:0] internal_ram[256] /* verilator public */;
+//
+// Split into even/odd byte banks so each has a single read port (both read at
+// phys_addr[7:1]). This lets it infer as distributed RAM (MLAB) instead of
+// ~2K flip-flops plus wide multiplexers, which would not fit the device.
+// Word accesses are assumed aligned (V35 scratch usage is aligned).
+(* ramstyle = "MLAB" *) reg [7:0] internal_ram_lo[128] /* verilator public */; // even bytes
+(* ramstyle = "MLAB" *) reg [7:0] internal_ram_hi[128] /* verilator public */; // odd bytes
 
 ISCR_if EXIC0(clk, reset); ISCR sfr_EXIC0(EXIC0);
 ISCR_if EXIC1(clk, reset); ISCR sfr_EXIC1(EXIC1);
@@ -395,9 +401,13 @@ task write_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e w
         default: begin end
         endcase
     end else if (RAMEN && phys_addr[19:8] == { sfr.IDB, 4'he }) begin
-        internal_ram[phys_addr[7:0]] <= data[7:0];
-        if (width != BYTE)
-            internal_ram[phys_addr[7:0] + 8'd1] <= data[15:8];
+        if (width == BYTE) begin
+            if (phys_addr[0]) internal_ram_hi[phys_addr[7:1]] <= data[7:0];
+            else              internal_ram_lo[phys_addr[7:1]] <= data[7:0];
+        end else begin
+            internal_ram_lo[phys_addr[7:1]] <= data[7:0];
+            internal_ram_hi[phys_addr[7:1]] <= data[15:8];
+        end
     end else begin
         dp_addr <= phys_addr;
         dp_dout <= data;
@@ -435,8 +445,10 @@ task read_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e wi
         default: internal_din <= 16'hf00d;
         endcase
     end else if (RAMEN && phys_addr[19:8] == { sfr.IDB, 4'he }) begin
-        internal_din <= width == BYTE ? { 8'h0, internal_ram[phys_addr[7:0]] }
-                                      : { internal_ram[phys_addr[7:0] + 8'd1], internal_ram[phys_addr[7:0]] };
+        internal_din <= width == BYTE
+            ? (phys_addr[0] ? { 8'h0, internal_ram_hi[phys_addr[7:1]] }
+                            : { 8'h0, internal_ram_lo[phys_addr[7:1]] })
+            : { internal_ram_hi[phys_addr[7:1]], internal_ram_lo[phys_addr[7:1]] };
     end else begin
         dp_addr <= phys_addr;
         dp_write <= 0;

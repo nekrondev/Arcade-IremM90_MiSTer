@@ -227,12 +227,13 @@ module v35_timer(
     output reg tu2_set      // -> TMIC2 (INTTU2)
 );
 
-// PCK clock divider selected by PRC[1:0] (2, 4, 8; 3 is invalid -> 8)
-wire [7:0] pck = pck_sel == 2'd0 ? 8'd2 : pck_sel == 2'd1 ? 8'd4 : 8'd8;
+// PCK clock divider selected by PRC[1:0] is a power of two (2, 4, 8; 3 is
+// invalid -> 8), so "PCK * prescaler" is just a left shift (no multiplier).
+wire [2:0] pck_shift = (pck_sel == 2'd3) ? 3'd3 : ({1'b0, pck_sel} + 3'd1);
 
 // Timer 0
 wire [7:0]  presc0     = TMC0[6] ? 8'd128 : (TMC0[0] ? 8'd12 : 8'd6);
-wire [15:0] presc0_max = pck * presc0;
+wire [15:0] presc0_max = {8'd0, presc0} << pck_shift;
 reg  [15:0] presc0_cnt;
 reg  [15:0] cnt0;
 reg         run0;
@@ -240,7 +241,7 @@ reg         prev_ts0;
 
 // Timer 1 (interval mode only)
 wire [7:0]  presc1     = TMC1[6] ? 8'd128 : 8'd6;
-wire [15:0] presc1_max = pck * presc1;
+wire [15:0] presc1_max = {8'd0, presc1} << pck_shift;
 reg  [15:0] presc1_cnt;
 reg  [15:0] cnt1;
 reg         run1;
