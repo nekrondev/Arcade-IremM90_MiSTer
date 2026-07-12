@@ -23,7 +23,6 @@ jobs:
       matrix:
         revision:
           - Arcade-IremM90
-          - Arcade-IremM90-Fast
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
