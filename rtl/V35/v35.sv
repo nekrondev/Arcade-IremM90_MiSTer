@@ -241,6 +241,7 @@ wire [7:0] ipq[8];
 wire [3:0] ipq_len;
 
 nec_decode_t decoded /*verilator public*/;
+wire [15:0] dbg_ipc /* verilator public */ = decoded.pc;  // executed instruction start IP (for tracing)
 opcode_e cur_opcode;
 
 reg [1:0] ce_count;
@@ -771,6 +772,7 @@ endtask
 
 
 reg [7:0] interrupt_vector;
+reg brkn_pending;   // set by OP_BRKN so INT_FETCH_VEC switches to native mode after the push
 wire bcu_intreq;
 wire bcu_intack;
 wire [7:0] bcu_intvec;
@@ -815,7 +817,7 @@ nec_decode nec_decode(
     .retire_op,
     .block_prefetch,
 
-    .secure,
+    .secure(secure & ~flags.MD),   // native mode (MD=1) executes un-decrypted; MAME: decrypt only when MF==0
     .secure_wr,
     .secure_addr,
     .secure_byte
@@ -941,10 +943,11 @@ always_ff @(posedge clk) begin
         flags.AC <= 0;
         flags.P <= 0;
         flags.CY <= 0;
-        flags.MD <= 1;
+        flags.MD <= ~secure;   // secure game boots in secure mode (MD=0 -> decrypt); MAME: MF=table?0:1
         flags.DIR <= 0;
         flags.IE <= 0;
         flags.BRK <= 0;
+        brkn_pending <= 0;
 
         sfr.IDB <= 8'hcc;
         sfr.PRC <= 8'h4e;
@@ -1085,6 +1088,8 @@ always_ff @(posedge clk) begin
             INT_FETCH_VEC: if (dp_ready & ce_1) begin
                 flags.IE <= 0;
                 flags.BRK <= 0;
+                if (brkn_pending) flags.MD <= 1;   // BRKN: enter native mode (after PSW pushed)
+                brkn_pending <= 0;
                 dp_addr <= { 10'd0, interrupt_vector[7:0], 2'b00 };
                 dp_write <= 0;
                 dp_io <= 0;
@@ -1668,6 +1673,16 @@ always_ff @(posedge clk) begin
                             end
                         end
 
+                        // BRKN imm8: software break to NATIVE mode. Vectors like an
+                        // interrupt (pushes PSW/PS/PC) then forces MD=1 so the handler
+                        // executes un-decrypted. MD is set after the push (see
+                        // INT_FETCH_VEC) so the saved PSW keeps the pre-break mode.
+                        OP_BRKN: begin
+                            interrupt_vector <= decoded.imm[7:0];
+                            exception = 1;
+                            brkn_pending <= 1;
+                        end
+
                         OP_FINT: begin
                             fint <= 1;
                         end
@@ -1957,7 +1972,7 @@ always_ff @(posedge clk) begin
                         flags.IE  <= mem_din[9];
                         flags.DIR <= mem_din[10];
                         flags.V   <= mem_din[11];
-                        // flags.MD  <= mem_din[15]; // TODO V33, no MD flag, V20/30 will need this
+                        flags.MD  <= mem_din[15]; // restore mode flag (RETI/POPF) -> returns from BRKN native handler
                     end
                     11: begin
                         reg_ps <= mem_din;
