@@ -1691,11 +1691,13 @@ always_ff @(posedge clk) begin
                                 bcd_result_high = bcd_acc_high;
                                 if (bcd_result_low > 5'd9) begin
                                     if (decoded.opcode == OP_ADD4S) begin
+                                        // decimal carry into the high nibble
                                         bcd_result_low = bcd_acc_low + 5'd6;
                                         bcd_result_high = bcd_acc_high + 5'd1;
                                     end else begin
-                                        bcd_result_low = bcd_acc_low + 5'd6;
-                                        bcd_result_high = bcd_acc_high + 5'd1;
+                                        // SUB4S/CMP4S: decimal borrow from the high nibble
+                                        bcd_result_low = bcd_acc_low - 5'd6;
+                                        bcd_result_high = bcd_acc_high - 5'd1;
                                     end
                                 end
 
