@@ -178,10 +178,10 @@ wire RAMEN = sfr.PRC[6];
 // Located at the {IDB}Exx page. Used by some games (e.g. Risky Challenge)
 // as fast scratch RAM; must behave as real read/write RAM.
 //
-// Split into even/odd byte banks so each has a single read port (both read at
-// phys_addr[7:1]). This lets it infer as distributed RAM (MLAB) instead of
-// ~2K flip-flops plus wide multiplexers, which would not fit the device.
-// Word accesses are assumed aligned (V35 scratch usage is aligned).
+// Split into even/odd byte banks so each has a single read port and a single
+// write port -> infers distributed RAM (MLAB) instead of ~2K flip-flops plus
+// wide multiplexers, which would not fit the device. Unaligned word accesses
+// are supported: the low bank is simply addressed at idx+1 for the high byte.
 (* ramstyle = "MLAB" *) reg [7:0] internal_ram_lo[128] /* verilator public */; // even bytes
 (* ramstyle = "MLAB" *) reg [7:0] internal_ram_hi[128] /* verilator public */; // odd bytes
 
@@ -404,7 +404,12 @@ task write_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e w
         if (width == BYTE) begin
             if (phys_addr[0]) internal_ram_hi[phys_addr[7:1]] <= data[7:0];
             else              internal_ram_lo[phys_addr[7:1]] <= data[7:0];
+        end else if (phys_addr[0]) begin
+            // unaligned word: low byte at odd addr (hi bank), high byte at next even (lo bank, idx+1)
+            internal_ram_hi[phys_addr[7:1]]          <= data[7:0];
+            internal_ram_lo[phys_addr[7:1] + 7'd1]   <= data[15:8];
         end else begin
+            // aligned word
             internal_ram_lo[phys_addr[7:1]] <= data[7:0];
             internal_ram_hi[phys_addr[7:1]] <= data[15:8];
         end
@@ -445,10 +450,15 @@ task read_memory(input bit [15:0] addr, input sreg_index_e seg, input width_e wi
         default: internal_din <= 16'hf00d;
         endcase
     end else if (RAMEN && phys_addr[19:8] == { sfr.IDB, 4'he }) begin
-        internal_din <= width == BYTE
-            ? (phys_addr[0] ? { 8'h0, internal_ram_hi[phys_addr[7:1]] }
-                            : { 8'h0, internal_ram_lo[phys_addr[7:1]] })
-            : { internal_ram_hi[phys_addr[7:1]], internal_ram_lo[phys_addr[7:1]] };
+        if (width == BYTE)
+            internal_din <= phys_addr[0] ? { 8'h0, internal_ram_hi[phys_addr[7:1]] }
+                                         : { 8'h0, internal_ram_lo[phys_addr[7:1]] };
+        else if (phys_addr[0])
+            // unaligned word: low byte from hi[idx], high byte from lo[idx+1]
+            internal_din <= { internal_ram_lo[phys_addr[7:1] + 7'd1], internal_ram_hi[phys_addr[7:1]] };
+        else
+            // aligned word
+            internal_din <= { internal_ram_hi[phys_addr[7:1]], internal_ram_lo[phys_addr[7:1]] };
     end else begin
         dp_addr <= phys_addr;
         dp_write <= 0;
@@ -1668,7 +1678,8 @@ always_ff @(posedge clk) begin
                                 flags.Z <= 1;
                                 flags.CY <= 0;
                             end else if (exec_stage == 1) begin
-                                if (bcd_offset == reg_cw[7:1]) begin
+                                // byte count = ceil(CL/2) = floor(CL/2) + (CL & 1), matching MAME's (CL+1)/2
+                                if (bcd_offset == (reg_cw[7:1] + { 6'd0, reg_cw[0] })) begin
                                     working = 0;
                                     delay = 0;
                                 end else begin
