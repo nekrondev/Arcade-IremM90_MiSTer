@@ -688,8 +688,8 @@ task handle_branch(input nec_decode_t dec);
             4'b1001: cond = ~flags.S; /* P */
             4'b1010: cond = flags.P; /* PE */
             4'b1011: cond = ~flags.P; /* PO */
-            4'b1100: cond = (flags.S ^ flags.V) & ~flags.Z; /* LT */
-            4'b1101: cond = ~(flags.S ^ flags.V) | flags.Z; /* GE */
+            4'b1100: cond = (flags.S ^ flags.V); /* LT */
+            4'b1101: cond = ~(flags.S ^ flags.V); /* GE */
             4'b1110: cond = (flags.S ^ flags.V) | flags.Z; /* LE */
             4'b1111: cond = ~((flags.S ^ flags.V) | flags.Z); /* GT */
             endcase
@@ -799,7 +799,8 @@ bus_control_unit_v35 BCU(
     .implementation_fault()
 );
 
-wire retire_op = state == IDLE && next_decode_valid && dp_ready;
+wire retire_op /* verilator public */ = state == IDLE && next_decode_valid && dp_ready;
+wire is_idle /* verilator public */ = (state == IDLE);
 wire next_decode_valid;
 nec_decode_t next_decode;
 
