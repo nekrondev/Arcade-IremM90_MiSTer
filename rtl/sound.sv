@@ -90,9 +90,9 @@ reg [17:0] sample_addr;
 wire [7:0] sample_data;
 reg sample_play = 0;
 
-singleport_ram #(.widthad(17), .width(8), .name("SAM")) sample_rom(
+singleport_ram #(.widthad(18), .width(8), .name("SAM")) sample_rom(   // 256KB: riskchal rc_v0 is 256KB and sample_addr is 18-bit
     .clock(clk),
-    .address(bram_sample_cs ? bram_addr[16:0] : sample_addr[16:0]),
+    .address(bram_sample_cs ? bram_addr[17:0] : sample_addr[17:0]),
     .q(sample_data),
     .wren((bram_sample_cs & bram_wr)),
     .data(bram_data)
